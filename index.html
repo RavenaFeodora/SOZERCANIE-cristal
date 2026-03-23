@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Room - Static Crystals</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        #ui {
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 350px;
+            text-align: center;
+            color: white;
+            z-index: 10;
+            pointer-events: none;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8);
+        }
+        #progress-container {
+            width: 100%;
+            height: 12px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        #progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #00ffcc, #0099ff);
+            box-shadow: 0 0 15px #00ffcc;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 6px;
+            height: 6px;
+            background: rgba(255,255,255,0.7);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #joystick-container {
+            position: absolute;
+            bottom: 40px;
+            left: 40px;
+            width: 100px;
+            height: 100px;
+            background: rgba(255,255,255,0.1);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 50%;
+            z-index: 20;
+            display: none;
+        }
+        #joystick-knob {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 40px;
+            height: 40px;
+            background: rgba(255,255,255,0.4);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #instructions {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.95);
+            color: white;
+            text-align: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+        button {
+            padding: 15px 40px;
+            font-size: 1.2rem;
+            background: #00ffcc;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 20px;
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="instructions">
+        <h1>Остановка Мира</h1>
+        <p>Смотрите на картину для начала процесса</p>
+        <button onclick="startGame()">НАЧАТЬ</button>
+    </div>
+
+    <div id="ui">
+        <div id="status-text">ОСТАНОВКА МИРА: 0%</div>
+        <div id="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
+
+    <div id="crosshair"></div>
+
+    <div id="joystick-container">
+        <div id="joystick-knob"></div>
+    </div>
+
+    <script>
+        const ASSETS = {
+            floor: 'i (2).jpeg',
+            wall: 'photo-wall-texture-pattern_58702-12902.jpg',
+            painting: 'InShot_20260322_110800776.jpg',
+            hallu1: 'InShot_20260323_195718005.png',
+            hallu2: 'InShot_20260323_195649894.png',
+            overlayImage: 'InShot_20260323_200302907.jpg',
+            musicCarbon: 'Carbon Based Lifeforms Photosynthesis (3).m4a',
+            musicFinal: 'bd6704ab7470ce8.mp3'
+        };
+
+        let scene, camera, renderer, clock, paintingMesh, overlayMesh;
+        let progress = 0, isLooking = false, hallucinations = [], crystals = [];
+        let postMaterial, compScene, compCam, furnitureGroup;
+        let roomWalls = [], roomFloor, roomCeiling;
+        let audioCarbon, audioFinal, musicSwapped = false;
+
+        const moveState = { f: 0, b: 0, l: 0, r: 0 };
+        let yaw = 0, pitch = 0;
+        const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+        let joyActive = false, joyStart = {x:0, y:0}, lookId = null, lastLX = 0, lastLY = 0;
+
+        const textureLoader = new THREE.TextureLoader();
+
+        function startGame() {
+            document.getElementById('instructions').style.display = 'none';
+            
+            audioCarbon = new Audio(ASSETS.musicCarbon);
+            audioCarbon.loop = true;
+            audioCarbon.volume = 0.5;
+            audioCarbon.play().catch(e => console.log("Audio failed", e));
+            
+            audioFinal = new Audio(ASSETS.musicFinal);
+            audioFinal.loop = true;
+            audioFinal.volume = 0;
+
+            if (!isTouch) document.body.requestPointerLock();
+            init();
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+            clock = new THREE.Clock();
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.5);
+            sun.position.set(5, 10, 5);
+            scene.add(sun);
+
+            // Комната
+            const wallTex = textureLoader.load(ASSETS.wall);
+            wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
+            wallTex.repeat.set(2, 1);
+            const floorTex = textureLoader.load(ASSETS.floor);
+            floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+            floorTex.repeat.set(3, 3);
+
+            const wallGeo = new THREE.PlaneGeometry(10, 6);
+            for(let i=0; i<4; i++) {
+                const mat = new THREE.MeshStandardMaterial({ map: wallTex, side: THREE.DoubleSide, transparent: true });
+                const w = new THREE.Mesh(wallGeo, mat);
+                if(i===0) w.position.set(0, 0, -5);
+                if(i===1) { w.position.set(0, 0, 5); w.rotation.y = Math.PI; }
+                if(i===2) { w.position.set(-5, 0, 0); w.rotation.y = Math.PI/2; }
+                if(i===3) { w.position.set(5, 0, 0); w.rotation.y = -Math.PI/2; }
+                scene.add(w);
+                roomWalls.push(w);
+            }
+
+            roomFloor = new THREE.Mesh(new THREE.PlaneGeometry(10, 10), new THREE.MeshStandardMaterial({ map: floorTex, transparent: true }));
+            roomFloor.rotation.x = -Math.PI/2;
+            roomFloor.position.y = -3;
+            scene.add(roomFloor);
+
+            roomCeiling = new THREE.Mesh(new THREE.PlaneGeometry(10, 10), new THREE.MeshStandardMaterial({ color: 0x111111, transparent: true }));
+            roomCeiling.rotation.x = Math.PI/2;
+            roomCeiling.position.y = 3;
+            scene.add(roomCeiling);
+
+            // Мебель
+            furnitureGroup = new THREE.Group();
+            createFurniture();
+            scene.add(furnitureGroup);
+
+            // Картина
+            paintingMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 1.8), new THREE.MeshStandardMaterial({ map: textureLoader.load(ASSETS.painting) }));
+            paintingMesh.position.set(0, 0.5, -4.98);
+            paintingMesh.name = "target";
+            scene.add(paintingMesh);
+
+            // Оверлей (50%)
+            const overTex = textureLoader.load(ASSETS.overlayImage);
+            overlayMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.2), new THREE.MeshBasicMaterial({ map: overTex, transparent: true, opacity: 0, depthTest: false }));
+            overlayMesh.position.set(0, 0, -0.2); 
+            camera.add(overlayMesh);
+            scene.add(camera);
+
+            createHallu();
+            setupPost();
+            setupInput();
+            if(isTouch) document.getElementById('joystick-container').style.display = 'block';
+            animate();
+        }
+
+        function createFurniture() {
+            const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a2a1b });
+            // Стол
+            const table = new THREE.Mesh(new THREE.BoxGeometry(3, 0.1, 1.5), woodMat);
+            table.position.set(0, -1.5, -2);
+            furnitureGroup.add(table);
+            const legGeo = new THREE.BoxGeometry(0.1, 1.5, 0.1);
+            for(let x of [-1.3, 1.3]) for(let z of [-0.6, 0.6]) {
+                const leg = new THREE.Mesh(legGeo, woodMat);
+                leg.position.set(x, -2.25, z-2);
+                furnitureGroup.add(leg);
+            }
+            // Стул
+            const chair = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.1, 0.7), woodMat);
+            chair.position.set(1.5, -2, -0.5);
+            furnitureGroup.add(chair);
+        }
+
+        function createHallu() {
+            const texs = [textureLoader.load(ASSETS.hallu1), textureLoader.load(ASSETS.hallu2)];
+            for(let i=0; i<10; i++) {
+                const mat = new THREE.MeshBasicMaterial({ map: texs[i%2], transparent: true, opacity: 0, depthWrite: false });
+                const s = new THREE.Sprite(mat);
+                s.scale.set(0.7, 1, 1);
+                s.position.set((Math.random()-0.5)*7, (Math.random()-0.5)*3, (Math.random()-0.5)*7);
+                scene.add(s);
+                hallucinations.push({ mesh: s, mat: mat, seed: Math.random()*10 });
+            }
+        }
+
+        function createCrystals() {
+            const crystalMat = new THREE.MeshPhongMaterial({ 
+                color: 0xffffff, transparent: true, opacity: 0.4, shininess: 100, side: THREE.DoubleSide 
+            });
+            for(let i=0; i<60; i++) {
+                // Создаем случайную геометрию кристалла (статичную)
+                const height = 0.5 + Math.random() * 2;
+                const geo = new THREE.ConeGeometry(0.02 + Math.random()*0.05, height, 4);
+                const c = new THREE.Mesh(geo, crystalMat.clone());
+                
+                // Распределяем от мебели и по комнате
+                const x = (Math.random()-0.5)*10;
+                const z = (Math.random()-0.5)*10;
+                const y = -3 + height/2;
+                
+                c.position.set(x, y, z);
+                c.rotation.set(Math.random()*0.4, Math.random()*Math.PI, Math.random()*0.4);
+                c.visible = false;
+                scene.add(c);
+                crystals.push(c);
+            }
+        }
+
+        function setupPost() {
+            postMaterial = new THREE.ShaderMaterial({
+                uniforms: { tDiffuse: {value:null}, time: {value:0}, progress: {value:0} },
+                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+                fragmentShader: `
+                    uniform sampler2D tDiffuse;
+                    uniform float time;
+                    uniform float progress;
+                    varying vec2 vUv;
+                    void main() {
+                        vec2 uv = vUv;
+                        float dist = 0.0;
+                        if(progress < 50.0) {
+                            dist = (progress < 10.0) ? (progress/100.0 * 0.003) : (progress/100.0 * 0.02);
+                        } else {
+                            dist = 0.0; // Марево полностью пропадает на 50%
+                        }
+                        uv.x += sin(uv.y * 12.0 + time * 1.5) * dist;
+                        uv.y += cos(uv.x * 12.0 + time * 1.5) * dist;
+                        vec4 col = texture2D(tDiffuse, uv);
+                        if(progress >= 10.0 && progress < 90.0) {
+                            float c = 1.0 + (progress-10.0)*0.012;
+                            col.rgb = (col.rgb - 0.5) * c + 0.5;
+                        }
+                        gl_FragColor = col;
+                    }
+                `
+            });
+            compScene = new THREE.Scene();
+            compCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            compScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial));
+            createCrystals();
+        }
+
+        function setupInput() {
+            if(!isTouch) {
+                document.addEventListener('mousemove', (e) => { if(document.pointerLockElement) { yaw -= e.movementX*0.002; pitch -= e.movementY*0.002; pitch = Math.max(-1.5, Math.min(1.5, pitch)); } });
+                document.addEventListener('keydown', (e) => { if(e.code==='KeyW') moveState.f=1; if(e.code==='KeyS') moveState.b=1; if(e.code==='KeyA') moveState.l=1; if(e.code==='KeyD') moveState.r=1; });
+                document.addEventListener('keyup', (e) => { if(e.code==='KeyW') moveState.f=0; if(e.code==='KeyS') moveState.b=0; if(e.code==='KeyA') moveState.l=0; if(e.code==='KeyD') moveState.r=0; });
+            } else {
+                const jc = document.getElementById('joystick-container'), jk = document.getElementById('joystick-knob');
+                renderer.domElement.addEventListener('touchstart', (e) => { for(let t of e.changedTouches) if(t.clientX > window.innerWidth/2) { lookId=t.identifier; lastLX=t.clientX; lastLY=t.clientY; } });
+                jc.addEventListener('touchstart', (e) => { joyActive=true; joyStart={x:e.touches[0].clientX, y:e.touches[0].clientY}; });
+                window.addEventListener('touchmove', (e) => {
+                    for(let t of e.changedTouches) {
+                        if(joyActive && t.target.closest('#joystick-container')) {
+                            let dx=t.clientX-joyStart.x, dy=t.clientY-joyStart.y, d=Math.min(Math.sqrt(dx*dx+dy*dy), 40), a=Math.atan2(dy, dx), lx=Math.cos(a)*d, ly=Math.sin(a)*d;
+                            jk.style.transform=`translate(calc(-50% + ${lx}px), calc(-50% + ${ly}px))`;
+                            moveState.f=ly<0?Math.abs(ly/40):0; moveState.b=ly>0?Math.abs(ly/40):0; moveState.l=lx<0?Math.abs(lx/40):0; moveState.r=lx>0?Math.abs(lx/40):0;
+                        }
+                        if(t.identifier === lookId) { yaw-=(t.clientX-lastLX)*0.006; pitch-=(t.clientY-lastLY)*0.006; pitch = Math.max(-1.5, Math.min(1.5, pitch)); lastLX=t.clientX; lastLY=t.clientY; }
+                    }
+                });
+                window.addEventListener('touchend', () => { joyActive=false; lookId=null; jk.style.transform='translate(-50%,-50%)'; Object.keys(moveState).forEach(k=>moveState[k]=0); });
+            }
+        }
+
+        const ray = new THREE.Raycaster();
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta(), time = clock.getElapsedTime();
+            
+            camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+            const speed = 2.5 * dt, fwd = new THREE.Vector3(0,0,-1).applyQuaternion(camera); fwd.y=0; fwd.normalize();
+            const rgt = new THREE.Vector3(1,0,0).applyQuaternion(camera); rgt.y=0; rgt.normalize();
+            if(moveState.f) camera.position.addScaledVector(fwd, speed*moveState.f);
+            if(moveState.b) camera.position.addScaledVector(fwd, -speed*moveState.b);
+            if(moveState.l) camera.position.addScaledVector(rgt, -speed*moveState.l);
+            if(moveState.r) camera.position.addScaledVector(rgt, speed*moveState.r);
+
+            camera.position.x = Math.max(-4.4, Math.min(4.4, camera.position.x));
+            camera.position.z = Math.max(-4.4, Math.min(4.4, camera.position.z));
+
+            ray.setFromCamera(new THREE.Vector2(0,0), camera);
+            const hits = ray.intersectObjects(scene.children);
+            isLooking = hits.some(h => h.object.name === "target");
+            
+            if(isLooking && progress < 100) progress += dt * 1.5; 
+            document.getElementById('progress-bar').style.width = progress + '%';
+            document.getElementById('status-text').innerText = `ОСТАНОВКА МИРА: ${Math.floor(progress)}%`;
+
+            // 50%: Фото и исчезновение марева/галлюцинаций
+            if(progress >= 50 && progress < 65) {
+                overlayMesh.material.opacity = Math.min(1.0, overlayMesh.material.opacity + 0.05);
+                hallucinations.forEach(h => h.mesh.visible = false);
+            } else {
+                overlayMesh.material.opacity = Math.max(0, overlayMesh.material.opacity - 0.05);
+            }
+
+            if(progress < 50) {
+                hallucinations.forEach(h => {
+                    h.mesh.visible = progress >= 20;
+                    h.mat.opacity = progress < 35 ? (progress-20)/15*0.4 : 0.7;
+                    if(progress >= 35) h.mat.color.setHSL((h.seed+time*0.1)%1, 0.5, 0.5);
+                });
+            }
+
+            // 65%: Рост статичных кристаллов
+            if(progress >= 65) {
+                crystals.forEach((c, i) => {
+                    c.visible = true;
+                    // Только рост масштаба, никакой анимации движения
+                    const growthFactor = Math.min(1, (progress-65)/15);
+                    const finalScale = (i % 5 + 1) * 0.5;
+                    c.scale.set(growthFactor * finalScale, growthFactor * finalScale, growthFactor * finalScale);
+                    
+                    // 90%: Цвет кристаллов
+                    if(progress >= 90) {
+                        c.material.color.setHSL((i/60 + time*0.05)%1, 0.6, 0.6);
+                        c.material.opacity = 0.5;
+                    }
+                });
+            }
+
+            // 90%: Исчезновение текстур
+            if(progress >= 90) {
+                roomWalls.forEach(w => w.material.opacity = Math.max(0, w.material.opacity - 0.015));
+                roomFloor.material.opacity = Math.max(0, roomFloor.material.opacity - 0.015);
+                roomCeiling.material.opacity = Math.max(0, roomCeiling.material.opacity - 0.015);
+                furnitureGroup.visible = false;
+                paintingMesh.visible = false;
+            }
+
+            // Музыка
+            if(progress >= 100 && !musicSwapped) {
+                if(audioCarbon.volume > 0.02) audioCarbon.volume -= 0.02;
+                else { audioCarbon.pause(); audioFinal.play(); musicSwapped = true; }
+                if(audioFinal.volume < 0.5) audioFinal.volume += 0.02;
+            }
+
+            const rt = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+            renderer.setRenderTarget(rt); renderer.render(scene, camera);
+            postMaterial.uniforms.tDiffuse.value = rt.texture;
+            postMaterial.uniforms.progress.value = progress; postMaterial.uniforms.time.value = time;
+            renderer.setRenderTarget(null); renderer.render(compScene, compCam);
+            rt.dispose();
+        }
+        window.addEventListener('resize', () => { camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+    </script>
+</body>
+</html>
+
